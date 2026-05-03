@@ -4,8 +4,11 @@
 > model author. Use at your own risk. See [`DISCLAIMER.md`](DISCLAIMER.md).**
 
 NVFP4 is NVIDIA's 4-bit float format with native Blackwell tensor-core
-support. On sm_120 hardware it gives BF16-tier quality at FP8-tier memory
-footprint and INT4-tier speed — *if* you can actually load it. This repo
+support. On sm_120 hardware it gives **near-FP16 quality** at FP8-tier
+memory footprint and INT4-tier speed — *if* you can actually load it.
+(Some perplexity loss vs BF16 source is expected — this is still lossy
+4-bit quantization, not magic. Run your own evals before deploying.)
+This repo
 is the workflow I use to **convert** unquantized HF models to NVFP4 via
 NVIDIA modelopt and **serve** them in vLLM, with all the CUDA-13 +
 flashinfer gotchas baked in.
@@ -59,17 +62,25 @@ subsequent loads are fast.
 
 ## Conversions confirmed working
 
-Measured on 1× RTX PRO 6000 Blackwell, TP=1, `--max-model-len 4096`,
-`--gpu-memory-utilization 0.30`. Single-stream tok/s, 256-token completions
-at temp=0, 1 warm-up discarded + N timed runs averaged.
+Measured on 1× RTX PRO 6000 Blackwell Workstation Edition, TP=1,
+`--max-model-len 4096`, `--gpu-memory-utilization 0.45`. Single-stream
+tok/s, 256-token completions at temp=0 with `ignore_eos=True`, 1 warm-up
+discarded + 10 timed runs averaged.
 
-| Source model | NVFP4 size | Speed (tok/s) | N runs |
+| Source model | NVFP4 size | Speed (tok/s) | stdev |
 |---|---:|---:|---:|
-| Qwen3-4B (dense) | 2.7 GB | 213.0 | 5 |
-| Qwen3-14B (dense) | 10.6 GB | 94.85 | 10 |
-| DeepSeek-R1-Distill-14B (Qwen2.5 base) | 9.9 GB | 88.94 | 5 |
+| Qwen3-4B (dense) | 2.7 GB | **213.62** | 0.07 |
+| Qwen3-14B (dense) | 10.6 GB | **100.93** | 0.06 |
+| DeepSeek-R1-Distill-14B (Qwen2.5 base) | 9.9 GB | **96.78** | 0.09 |
 
-Source weights for these are all on Hugging Face under their original
+Reproduce with:
+```bash
+./start-nvfp4.sh <NVFP4-model-dir> --port 8011 --util 0.45    # in one shell
+python bench_tps.py --url http://127.0.0.1:8011/v1 --runs 10  # in another
+```
+
+Full per-run log + bench harness in [`RESULTS.md`](RESULTS.md). Source
+weights for these models are all on Hugging Face under their original
 licenses; this repo does not redistribute them.
 
 ## Architectures known NOT to work yet
@@ -131,6 +142,9 @@ The fix is not version-pinned to these — they're just what was on the box.
   models, quantizes only the LM branch.
 - [`start-nvfp4.sh`](start-nvfp4.sh) — vLLM launcher with curand fix +
   Blackwell-PCIe TP>1 fixes baked in. Defaults: port 8011, TP=1, util 0.30.
+- [`bench_tps.py`](bench_tps.py) — single-stream tok/s benchmark for any
+  OpenAI-compatible endpoint. Used to produce the table above.
+- [`RESULTS.md`](RESULTS.md) — full per-run logs and reproduction recipe.
 - [`BLOCKED.md`](BLOCKED.md) — architectures that need more work, with
   the actual error each one currently fails with.
 - [`DISCLAIMER.md`](DISCLAIMER.md) — what this repo is and is not.
