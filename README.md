@@ -8,10 +8,10 @@ support. On sm_120 hardware it gives **near-FP16 quality** at FP8-tier
 memory footprint and INT4-tier speed — *if* you can actually load it.
 (Some perplexity loss vs BF16 source is expected — this is still lossy
 4-bit quantization, not magic. Run your own evals before deploying.)
-This repo
-is the workflow I use to **convert** unquantized HF models to NVFP4 via
-NVIDIA modelopt and **serve** them in vLLM, with all the CUDA-13 +
-flashinfer gotchas baked in.
+
+This repo is the workflow I use to **convert** unquantized HF models to
+NVFP4 via NVIDIA modelopt and **serve** them in vLLM, with all the
+CUDA-13 + flashinfer gotchas baked in.
 
 Sibling repo: [vllm-blackwell-tp2-fix](https://github.com/ai-xcode/vllm-blackwell-tp2-fix)
 (TP=2 deadlock workaround for the same hardware class).
