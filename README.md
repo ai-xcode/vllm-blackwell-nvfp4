@@ -4,10 +4,12 @@
 > model author. Use at your own risk. See [`DISCLAIMER.md`](DISCLAIMER.md).**
 
 NVFP4 is NVIDIA's 4-bit float format with native Blackwell tensor-core
-support. On sm_120 hardware it gives **near-FP16 quality** at FP8-tier
-memory footprint and INT4-tier speed — *if* you can actually load it.
-(Some perplexity loss vs BF16 source is expected — this is still lossy
-4-bit quantization, not magic. Run your own evals before deploying.)
+support. On sm_120 hardware it shrinks weights to **~1/4 of FP16 memory**
+and runs through dedicated FP4 GEMM kernels that older INT4-only
+quantization formats can't use — *if* you can actually load it.
+(NVFP4 is still lossy 4-bit quantization, not magic. Some perplexity
+loss vs BF16 source is expected. Run your own evals before deploying;
+this repo measures throughput, not quality.)
 
 This repo is the workflow I use to **convert** unquantized HF models to
 NVFP4 via NVIDIA modelopt and **serve** them in vLLM, with all the
@@ -31,34 +33,48 @@ python convert_to_nvfp4.py \
 
 ## The non-obvious gotcha — `curand_kernel.h` not found
 
-Without this, **no NVFP4 model will load in vLLM on CUDA 13.**
+Without one of the two fixes below, **no NVFP4 model will load in vLLM
+on a default CUDA 13 install.**
 
 flashinfer JIT-compiles its FP4 GEMM kernels for sm_120 the first time
-you load a model. The compile fails with:
+you load an NVFP4 model. The compile fails with:
 
 ```
 fatal error: curand_kernel.h: No such file or directory
 ```
 
-`/usr/local/cuda-13.0/include/` is missing curand-dev headers — there's
-no apt package for cu13 dev as of this writing. The headers *do* exist
-inside the pip-installed `nvidia-curand-cu13` wheel:
+The CUDA 13 base install does not ship cuRAND dev headers in
+`/usr/local/cuda-13.0/include/` by default — they live in a separate
+`libcurand-dev-13-0` package that isn't pulled in as a dependency. Two
+ways to fix it:
 
+**Option A — install the apt package (recommended if you have sudo):**
+```bash
+sudo apt install libcurand-dev-13-0
+```
+This drops `curand_kernel.h` and friends into
+`/usr/local/cuda-13.0/targets/x86_64-linux/include/`, which is on nvcc's
+default include path. flashinfer's compile then works with no env-var
+trickery.
+
+**Option B — use the pip-wheel headers via env vars (no sudo needed):**
+The same headers also ship inside the `nvidia-curand-cu13` pip wheel at:
 ```
 <vllm_venv>/lib/python3.12/site-packages/nvidia/cu13/include/curand_kernel.h
 ```
-
-[`start-nvfp4.sh`](start-nvfp4.sh) works around it with two env vars:
-
+[`start-nvfp4.sh`](start-nvfp4.sh) points nvcc at that location with two
+env vars before launching vLLM:
 ```bash
 PIP_NV_INC=<venv>/lib/python3.12/site-packages/nvidia/cu13/include
 export NVCC_PREPEND_FLAGS="-I$PIP_NV_INC"
 export CPATH="$PIP_NV_INC"
 ```
 
-After this the JIT compile succeeds and the kernels are cached for all
-subsequent loads. **First load takes ~2 minutes** while kernels build;
-subsequent loads are fast.
+Either fix works. Once the first JIT compile succeeds, kernels are
+cached under `~/.cache/flashinfer/<version>/`. Cold-cache first load on
+this hardware takes ~1–2 minutes for the kernel build; warm loads
+complete in ~30–40 seconds (measured during the runs in
+[`RESULTS.md`](RESULTS.md)).
 
 ## Conversions confirmed working
 
@@ -82,6 +98,35 @@ python bench_tps.py --url http://127.0.0.1:8011/v1 --runs 10  # in another
 Full per-run log + bench harness in [`RESULTS.md`](RESULTS.md). Source
 weights for these models are all on Hugging Face under their original
 licenses; this repo does not redistribute them.
+
+## Optional — web UI (`nvfp4_ui.py`)
+
+If you'd rather not type CLI flags, the repo includes a small NiceGUI
+dashboard that wraps all three CLIs (convert, serve, bench) with
+click-to-run forms, live log streaming, and a live GPU panel.
+
+```bash
+./launch_nvfp4_ui.sh        # → http://127.0.0.1:8770
+```
+
+Three tabs:
+- **Convert** — pick a BF16/FP16 source dir, output name auto-fills,
+  choose calibration samples + device, watch the conversion log stream.
+- **Serve** — pick an NVFP4 dir, set port + util + max-len, start /
+  stop a vLLM endpoint. Includes a hard kill of lingering
+  `VLLM::EngineCore` worker processes (vLLM workers don't always exit
+  with their parent on SIGTERM).
+- **Bench** — point at any OpenAI-compatible URL, set runs / warmup /
+  max-tokens, get the same numbers `bench_tps.py` produces.
+
+Override defaults via env vars (sensible fallbacks for the layout in
+this repo):
+- `NVFP4_MODELS_DIR`   — where to scan for source / NVFP4 dirs
+- `NVFP4_CONVERT_VENV` — venv that has `nvidia-modelopt`
+- `NVFP4_SERVE_VENV`   — venv that has `vllm`
+- `NVFP4_UI_PORT`      — UI port (default 8770)
+
+Requires `pip install nicegui` in whichever python launches the UI.
 
 ## Architectures known NOT to work yet
 
@@ -107,17 +152,26 @@ If you make any of these work, PRs welcome.
 |---|---|
 | 2× RTX PRO 6000 Blackwell Workstation Edition (sm_120, PCIe x16, no NVLink) | ✅ confirmed |
 
-## Software stack
+## Software stack (exact versions used to produce the table)
 
-- vLLM 0.19.x (with `modelopt_fp4` quantization support)
-- PyTorch 2.11.0 + cu130
-- nvidia-modelopt 0.43.0
-- transformers 5.x (5.8.0.dev for Qwen3.5 VL families)
-- flashinfer (with the curand workaround above)
-- CUDA 13.0, NCCL 2.28.9, Driver 580.126.18
-- Python 3.12
+- **Conversion venv** (`~/nvfp4_conversion/venv`):
+  - nvidia-modelopt 0.43.0
+  - PyTorch 2.11.0 + cu130
+  - transformers 5.8.0.dev0 (needed for Qwen3.5 VL family configs)
+- **Serving venv** (`~/vLLM_Servers/vllm_env`):
+  - vLLM 0.19.2rc1.dev107 (with `--quantization modelopt_fp4`)
+  - PyTorch 2.11.0 + cu130
+  - flashinfer-python 0.6.7
+  - transformers 5.5.4
+- **System:**
+  - CUDA 13.0.88 (nvcc), Driver 580.126.18
+  - NCCL 2.28.9 (`torch.cuda.nccl.version()`)
+  - Python 3.12.3
+  - Ubuntu 24.04
 
-The fix is not version-pinned to these — they're just what was on the box.
+The fix is not version-pinned to these — they're just what was on the
+box when the RESULTS.md numbers were measured. Newer modelopt releases
+add more architectures; newer flashinfer keeps adding sm_120 kernels.
 
 ## Likely works on (untested by author — community PRs welcome)
 
@@ -144,6 +198,9 @@ The fix is not version-pinned to these — they're just what was on the box.
   Blackwell-PCIe TP>1 fixes baked in. Defaults: port 8011, TP=1, util 0.30.
 - [`bench_tps.py`](bench_tps.py) — single-stream tok/s benchmark for any
   OpenAI-compatible endpoint. Used to produce the table above.
+- [`nvfp4_ui.py`](nvfp4_ui.py) — NiceGUI dashboard wrapping convert /
+  serve / bench. Default port 8770.
+- [`launch_nvfp4_ui.sh`](launch_nvfp4_ui.sh) — UI launcher.
 - [`RESULTS.md`](RESULTS.md) — full per-run logs and reproduction recipe.
 - [`BLOCKED.md`](BLOCKED.md) — architectures that need more work, with
   the actual error each one currently fails with.

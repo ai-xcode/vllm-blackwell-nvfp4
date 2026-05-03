@@ -118,8 +118,9 @@ stdev  : 0.09
 ## Observations
 
 - **Run-to-run variance is tiny** (stdev 0.06–0.09 tok/s) once the warm-up
-  is discarded. The Blackwell + NVFP4 path is very deterministic at
-  single-stream — no thermal throttling, no kernel-cache thrash.
+  is discarded — the Blackwell + NVFP4 path is very deterministic at
+  single-stream throughput. Thermal behavior under sustained load was
+  *not* characterized here; these are 11-run sprints, not endurance runs.
 - **Qwen3-14B vs DeepSeek-R1-Distill-14B** (same parameter count,
   different base): 100.93 vs 96.78 tok/s. The ~4 % gap is consistent with
   the slightly different layer composition between Qwen3-14B and
