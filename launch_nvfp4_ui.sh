@@ -21,4 +21,24 @@ if ! "$PY" -c "import nicegui" 2>/dev/null; then
 fi
 
 echo "[nvfp4_ui] http://127.0.0.1:${PORT}"
-exec "$PY" "$HERE/nvfp4_ui.py"
+
+# If already running, just open the browser
+if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:${PORT}/"; then
+    xdg-open "http://127.0.0.1:${PORT}/" >/dev/null 2>&1 &
+    exit 0
+fi
+
+# Otherwise start in background, wait until reachable, then open browser
+LOG="${HOME}/.nvfp4_ui.log"
+nohup "$PY" "$HERE/nvfp4_ui.py" > "$LOG" 2>&1 &
+echo "  PID=$! · log: $LOG"
+for i in $(seq 1 30); do
+    if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:${PORT}/"; then
+        xdg-open "http://127.0.0.1:${PORT}/" >/dev/null 2>&1 &
+        exit 0
+    fi
+    sleep 1
+done
+echo "[nvfp4_ui] did not come up in 30s, see $LOG"
+tail -n 20 "$LOG"
+exit 1
